@@ -41,9 +41,11 @@ Conte ~R$ 46. Domínio à parte, ~R$ 40–90/ano.
 | `infra/Caddyfile` | `/opt/stacks/_infra/` | roteamento e TLS |
 | `infra/.env.example` | `/opt/stacks/_infra/.env` | domínio, e-mail ACME, senha do banco |
 | `templates/projeto-exemplo/` | modelo | base de cada projeto novo |
-| `scripts/novo-projeto.sh` | `~/bin/` | cria database, stack e rota de uma vez |
+| `scripts/deploy-infra.sh` | roda no notebook | envia o molde sem tocar no estado vivo |
+| `scripts/novo-projeto.sh` | `~/servidor/scripts/` | cria database, stack e rota de uma vez |
 | `scripts/backup.sh` | `/usr/local/bin/` | dump + envio para o bucket |
-| `scripts/restore.sh` | `/usr/local/bin/` | restaura de um snapshot |
+| `scripts/restore.sh` | `/usr/local/bin/` | restaura os **dados** de um snapshot |
+| `scripts/restore-stacks.sh` | `/usr/local/bin/` | restaura a **configuração** de um snapshot |
 | `scripts/backup.env.example` | `/etc/backup.env` | credenciais do bucket e chave de cripto |
 | `systemd/backup.{service,timer}` | `/etc/systemd/system/` | agenda o backup |
 
@@ -149,26 +151,29 @@ Brasília em vez de UTC.
 
 ## 6. Subir a infraestrutura
 
-Do seu notebook:
+Do seu notebook, de dentro deste repo:
 
 ```bash
-scp -r infra/ matheus@SEU_IP:/opt/stacks/_infra
+./scripts/deploy-infra.sh matheus@SEU_IP
 ```
 
-No servidor:
+Ele cria os diretórios, envia `compose.yml`, `Caddyfile`, `.env.example`,
+os scripts e os templates — e para na primeira execução avisando que falta o
+`.env`. No servidor:
 
 ```bash
 cd /opt/stacks/_infra
-cp .env.example .env
-chmod 600 .env
+cp .env.example .env && chmod 600 .env
 
-# Gere a senha do banco e cole no .env, junto com DOMINIO e ACME_EMAIL
-openssl rand -base64 32
+openssl rand -base64 32     # senha do banco, cole no .env
+nano .env                   # DOMINIO, ACME_EMAIL, POSTGRES_PASSWORD
 
-nano .env
 docker compose up -d
 docker compose ps
 ```
+
+Da próxima vez que você mexer no `compose.yml` ou no `Caddyfile`, é só rodar o
+`deploy-infra.sh` de novo — ele pergunta se aplica na hora.
 
 Confira o TLS. O primeiro certificado leva alguns segundos:
 
@@ -191,14 +196,14 @@ Crie o bucket (Cloudflare R2 ou Backblaze B2, ambos com 10 GB grátis) e um
 token de leitura/escrita. No servidor:
 
 ```bash
-sudo cp scripts/backup.sh scripts/restore.sh /usr/local/bin/
-sudo chmod 700 /usr/local/bin/backup.sh /usr/local/bin/restore.sh
+sudo cp ~/servidor/scripts/backup.sh ~/servidor/scripts/restore*.sh /usr/local/bin/
+sudo chmod 700 /usr/local/bin/backup.sh /usr/local/bin/restore*.sh
 
-sudo cp scripts/backup.env.example /etc/backup.env
+sudo cp ~/servidor/scripts/backup.env.example /etc/backup.env
 sudo chmod 600 /etc/backup.env
 sudo nano /etc/backup.env          # credenciais + RESTIC_PASSWORD
 
-sudo cp systemd/backup.service systemd/backup.timer /etc/systemd/system/
+sudo cp ~/servidor/systemd/backup.service ~/servidor/systemd/backup.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now backup.timer
 
@@ -227,6 +232,18 @@ Ele pede o hostname digitado como confirmação, valida a integridade do gzip
 antes de tocar no banco e aplica o dump. Se funcionar com o banco vazio, vai
 funcionar no dia ruim.
 
+Teste também o outro lado — a configuração:
+
+```bash
+sudo /usr/local/bin/restore-stacks.sh        # baixa para staging, não sobrescreve
+sudo ls -la /var/backups/restore-stacks/opt/stacks/
+```
+
+São dois scripts porque são duas metades: `restore.sh` traz os **dados**,
+`restore-stacks.sh` traz a **configuração** (composes, rotas do Caddy e os
+`.env` com as senhas dos databases). Restaurar só um dos dois não devolve um
+servidor funcionando.
+
 Uma vez por mês, verificação profunda (lê os dados de fato, não só os
 metadados):
 
@@ -236,11 +253,11 @@ source /etc/backup.env && sudo -E restic check --read-data-subset=10%
 
 ## 9. Primeiro projeto
 
+Os scripts e templates já foram para o servidor no passo 6. Então:
+
 ```bash
-scp -r scripts/ templates/ matheus@SEU_IP:~/
 ssh matheus@SEU_IP
-chmod +x ~/scripts/novo-projeto.sh
-~/scripts/novo-projeto.sh meu-blog
+~/servidor/scripts/novo-projeto.sh meu-blog
 ```
 
 O script cria o database e o role dedicados, gera `/opt/stacks/meu-blog/` a
@@ -280,6 +297,76 @@ cd /opt/stacks/<projeto> && docker compose pull && docker compose up -d
 ssh -L 5432:localhost:5432 matheus@SEU_IP \
     'docker compose -f /opt/stacks/_infra/compose.yml exec postgres psql -U postgres'
 ```
+
+## Modelo: o repo é molde, o servidor é o estado
+
+Este repositório **não** é a fonte da verdade do que está rodando. Ele é o
+molde: o que você precisa para construir um servidor, não o retrato do
+servidor construído.
+
+| | Onde vive | Como se recupera |
+|---|---|---|
+| cloud-init, infra base, templates, scripts | este repo (git) | `git clone` + `deploy-infra.sh` |
+| `/opt/stacks/<projeto>/` e os `.env` | só no servidor | `restore-stacks.sh` |
+| databases | só no Postgres | `restore.sh` |
+
+A consequência prática: **`/opt/stacks` fica fora do git de propósito**, e a
+única coisa que o protege é o backup do restic. Se o `backup.timer` parar de
+rodar e você não notar, você perde os `.env` com as senhas dos databases — que
+são geradas aleatoriamente pelo `novo-projeto.sh` e não existem em nenhum
+outro lugar.
+
+Por isso, duas rotinas que não são opcionais neste modelo:
+
+1. Um monitor no Uptime Kuma do tipo **Push**, que o `backup.sh` pinga ao
+   terminar. Se o backup falhar ou parar, você é avisado em vez de descobrir
+   no dia do desastre. Crie o monitor no Kuma, copie a URL e adicione a última
+   linha do `backup.sh`:
+   ```bash
+   curl -fsS --max-time 10 "https://status.SEU_DOMINIO/api/push/XXXXX" >/dev/null
+   ```
+2. `restic snapshots` de vez em quando, só para ver que a data do último
+   snapshot é de ontem e não de três meses atrás.
+
+Quando você editar `compose.yml`, `Caddyfile`, um template ou um script:
+commite aqui, rode `./scripts/deploy-infra.sh`, pronto. Quando você criar um
+projeto: isso acontece no servidor e o repo não fica sabendo — é o esperado.
+
+## Reconstruir do zero
+
+Cenário: o servidor morreu, a conta foi suspensa, ou você quer migrar de
+provedor. Com os três pedaços acima, a reconstrução é mecânica:
+
+```bash
+# 1. Servidor novo com o mesmo cloud-init (passo 4)
+# 2. Apontar o DNS para o IP novo (passo 3)
+
+# 3. Do notebook, no repo:
+./scripts/deploy-infra.sh matheus@IP_NOVO
+
+# 4. No servidor novo — credenciais do bucket primeiro:
+sudo cp ~/servidor/scripts/backup.env.example /etc/backup.env
+sudo chmod 600 /etc/backup.env
+sudo nano /etc/backup.env          # cole a RESTIC_PASSWORD do gerenciador de senhas
+sudo cp ~/servidor/scripts/restore*.sh /usr/local/bin/ && sudo chmod 700 /usr/local/bin/restore*.sh
+
+# 5. Configuração de volta (traz os .env com as senhas dos databases)
+sudo /usr/local/bin/restore-stacks.sh --in-place
+
+# 6. Infra de pé, depois os dados
+cd /opt/stacks/_infra && docker compose up -d
+sudo /usr/local/bin/restore.sh
+
+# 7. Projetos de volta
+for d in /opt/stacks/*/; do
+  [ "$d" = /opt/stacks/_infra/ ] && continue
+  (cd "$d" && docker compose up -d)
+done
+```
+
+O passo 4 é o único que depende de algo que não está em lugar nenhum
+automatizado: a `RESTIC_PASSWORD`. Sem ela, os passos 5 e 6 são impossíveis e
+o backup inteiro vira ruído. **Guarde num gerenciador de senhas hoje.**
 
 ## Armadilhas conhecidas
 
