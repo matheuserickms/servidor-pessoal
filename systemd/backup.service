@@ -1,0 +1,23 @@
+# Destino: /etc/systemd/system/backup.service
+
+[Unit]
+Description=Backup do Postgres e dos stacks para storage externo
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/backup.sh
+User=root
+
+# O backup não pode competir com as aplicações por CPU e I/O.
+Nice=10
+IOSchedulingClass=idle
+
+# Se travar (rede caiu no meio do upload), morre em 1h em vez de segurar
+# o timer para sempre.
+TimeoutStartSec=1h
+
+[Install]
+WantedBy=multi-user.target

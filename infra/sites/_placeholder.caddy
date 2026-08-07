@@ -1,0 +1,4 @@
+# Arquivo intencionalmente vazio.
+#
+# Existe para que `import sites/*.caddy` no Caddyfile sempre encontre pelo
+# menos um arquivo. Cada projeto novo ganha o seu próprio .caddy aqui.

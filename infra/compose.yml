@@ -1,0 +1,117 @@
+# =============================================================================
+# Stack de infraestrutura: proxy reverso, banco e monitoramento.
+# Destino no servidor: /opt/stacks/_infra/compose.yml
+#
+#   docker compose up -d
+#
+# Este é o único stack que publica portas no host. Todos os projetos falam
+# com o Caddy pela rede "edge" e com o Postgres pela rede "data".
+# =============================================================================
+
+name: infra
+
+networks:
+  edge:
+    external: true
+  data:
+    external: true
+
+volumes:
+  caddy_data: # certificados Let's Encrypt — NÃO apague, tem rate limit
+  caddy_config:
+  pg_data:
+  kuma_data:
+
+services:
+  # ---------------------------------------------------------------------------
+  # Proxy reverso + TLS automático.
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    # Só as variáveis que o Caddy usa. Um `env_file: .env` aqui despejaria
+    # também a senha do Postgres dentro deste container, sem necessidade.
+    environment:
+      DOMINIO: ${DOMINIO:?defina DOMINIO no .env}
+      ACME_EMAIL: ${ACME_EMAIL:?defina ACME_EMAIL no .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./sites:/etc/caddy/sites:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Um Postgres para todos os projetos, um database por projeto.
+  # Cada instância extra de Postgres custaria ~150 MB fixos de RAM — em 4 GB
+  # isso é desperdício. Isolamento fica por database + role.
+  #
+  # Os parâmetros abaixo são dimensionados para 4 GB. Se subir para CAX21
+  # (8 GB), dobre shared_buffers e effective_cache_size.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+      POSTGRES_DB: postgres
+      # Sem isso o initdb usa "trust" para conexões locais dentro do container.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=60
+      - -c
+      - log_min_duration_statement=2000
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - data
+    # Sem `ports:` de propósito. O banco é alcançável só de dentro da rede
+    # "data". Para abrir um psql do seu notebook, use túnel SSH (ver README).
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Monitoramento. Avisa no Telegram quando algo cai.
+  # Acesso em https://status.SEU_DOMINIO (protegido por login próprio do Kuma).
+  # ---------------------------------------------------------------------------
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: uptime-kuma
+    restart: unless-stopped
+    volumes:
+      - kuma_data:/app/data
+    networks:
+      - edge
+    deploy:
+      resources:
+        limits:
+          memory: 256M

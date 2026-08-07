@@ -1,0 +1,18 @@
+# Segredos: os .env de verdade nunca entram aqui.
+# Os *.example são o que fica versionado.
+.env
+**/.env
+backup.env
+*.key
+*.pem
+*.p12
+
+# Dumps e artefatos de backup
+*.sql
+*.sql.gz
+*.dump
+
+# Ruído do editor
+.DS_Store
+*.swp
+*~

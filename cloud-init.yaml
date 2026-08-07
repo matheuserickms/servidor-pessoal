@@ -1,0 +1,197 @@
+#cloud-config
+# =============================================================================
+# Hetzner Cloud CAX11 (ARM64 Ampere) — Ubuntu 24.04 LTS "noble"
+#
+# COMO USAR: ao criar o servidor no console da Hetzner, abra a seção
+# "Cloud config" e cole este arquivo INTEIRO. Ele roda uma única vez, no
+# primeiro boot. Depois de criado, editar aqui não muda nada no servidor.
+#
+# ANTES DE COLAR, troque:
+#   1. A chave em ssh_authorized_keys pela sua chave pública
+#   2. O hostname, se quiser outro nome
+# =============================================================================
+
+hostname: srv01
+fqdn: srv01
+prefer_fqdn_over_hostname: false
+
+# Criado explicitamente aqui para existir ANTES do usuário ser criado.
+# Se deixássemos o pacote docker-ce criar o grupo, o usermod abaixo rodaria
+# antes da instalação e falharia.
+groups:
+  - docker
+
+users:
+  - name: matheus
+    gecos: Matheus
+    groups: [sudo, docker]
+    shell: /bin/bash
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    lock_passwd: true
+    ssh_authorized_keys:
+      # >>> TROQUE PELA SUA CHAVE PÚBLICA (conteúdo de ~/.ssh/id_ed25519.pub) <<<
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI_TROQUE_ISSO matheus@notebook
+
+# Desabilita a conta root para login remoto. O usuário acima tem sudo.
+disable_root: true
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - git
+  - ufw
+  - fail2ban
+  - unattended-upgrades
+  - restic
+  - htop
+  - ncdu
+  - jq
+
+write_files:
+  # ---------------------------------------------------------------------------
+  # SSH: só chave, sem root, sem senha.
+  # O sshd do Ubuntu já faz Include /etc/ssh/sshd_config.d/*.conf
+  # ---------------------------------------------------------------------------
+  - path: /etc/ssh/sshd_config.d/99-hardening.conf
+    permissions: "0644"
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PubkeyAuthentication yes
+      AuthenticationMethods publickey
+      X11Forwarding no
+      MaxAuthTries 3
+      ClientAliveInterval 300
+      ClientAliveCountMax 2
+
+  # ---------------------------------------------------------------------------
+  # fail2ban: no Ubuntu 24.04 o sshd loga no journald, não em /var/log/auth.log.
+  # Sem "backend = systemd" o jail sobe mas nunca bane ninguém.
+  # ---------------------------------------------------------------------------
+  - path: /etc/fail2ban/jail.d/sshd.local
+    permissions: "0644"
+    content: |
+      [sshd]
+      enabled  = true
+      backend  = systemd
+      port     = ssh
+      maxretry = 5
+      findtime = 10m
+      bantime  = 1h
+
+  # ---------------------------------------------------------------------------
+  # Atualizações de segurança automáticas, sem reboot automático.
+  # (Reboot fica manual: você decide quando derrubar os serviços.)
+  # ---------------------------------------------------------------------------
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    permissions: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+
+  - path: /etc/apt/apt.conf.d/50unattended-upgrades-local
+    permissions: "0644"
+    content: |
+      Unattended-Upgrade::Automatic-Reboot "false";
+      Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+
+  # ---------------------------------------------------------------------------
+  # Com 4 GB de RAM o swap não é opcional. swappiness baixo para o kernel
+  # só recorrer ao swap sob pressão real, não por preferência.
+  # ---------------------------------------------------------------------------
+  - path: /etc/sysctl.d/99-servidor.conf
+    permissions: "0644"
+    content: |
+      vm.swappiness = 10
+      vm.vfs_cache_pressure = 50
+      net.core.somaxconn = 1024
+
+  # ---------------------------------------------------------------------------
+  # Rotação de log do Docker. Sem isso, um container tagarela enche os
+  # 40 GB de disco em algumas semanas e o servidor para de responder.
+  # ---------------------------------------------------------------------------
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": {
+          "max-size": "10m",
+          "max-file": "3"
+        },
+        "live-restore": true
+      }
+
+runcmd:
+  # --- swap de 2 GB ---------------------------------------------------------
+  - |
+    set -x
+    if [ ! -f /swapfile ]; then
+      fallocate -l 2G /swapfile
+      chmod 600 /swapfile
+      mkswap /swapfile
+      swapon /swapfile
+      echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
+    sysctl --system
+
+  # --- Docker Engine + Compose plugin (repositório oficial) -----------------
+  # Não use o docker.io do Ubuntu nem snap: versões velhas e o plugin
+  # compose v2 não vem junto.
+  - |
+    set -x
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    usermod -aG docker matheus
+    systemctl enable --now docker
+
+  # --- Redes Docker compartilhadas ------------------------------------------
+  # "edge"  = tudo que o Caddy precisa alcançar (apps web)
+  # "data"  = tudo que fala com o Postgres (apps + workers)
+  # Separar as duas significa que um bot sem porta HTTP nunca fica alcançável
+  # pelo proxy, e que o Postgres nunca é visível na rede do proxy.
+  - |
+    set -x
+    docker network create edge 2>/dev/null || true
+    docker network create data 2>/dev/null || true
+
+  # --- Firewall interno ------------------------------------------------------
+  # ATENÇÃO: o Docker escreve regras de iptables direto e IGNORA o ufw.
+  # Se algum compose publicar uma porta com `ports:`, ela fica exposta na
+  # internet mesmo com o ufw negando. Por isso o Hetzner Cloud Firewall (na
+  # borda, fora da VM) é a defesa que vale — o ufw aqui é só a segunda camada.
+  # Regra de ouro do setup: só o Caddy usa `ports:`.
+  - |
+    set -x
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 22/tcp comment 'ssh'
+    ufw allow 80/tcp comment 'http'
+    ufw allow 443/tcp comment 'https'
+    ufw allow 443/udp comment 'http3'
+    ufw --force enable
+
+  # --- Diretório dos stacks --------------------------------------------------
+  - |
+    set -x
+    mkdir -p /opt/stacks /var/backups/postgres
+    chown -R matheus:matheus /opt/stacks
+    chmod 700 /var/backups/postgres
+
+  # --- Aplica SSH e fail2ban -------------------------------------------------
+  - systemctl restart ssh
+  - systemctl enable --now fail2ban
+
+final_message: "Servidor pronto em $UPTIME segundos. Suba os stacks em /opt/stacks."

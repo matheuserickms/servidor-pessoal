@@ -1,0 +1,73 @@
+# =============================================================================
+# Template de projeto. Destino: /opt/stacks/<projeto>/compose.yml
+#
+# Troque PROJETO por um slug curto (só letras, números e hífen) em todos os
+# lugares — ou use scripts/novo-projeto.sh, que faz isso pra você.
+# =============================================================================
+
+name: PROJETO
+
+networks:
+  edge:
+    external: true
+  data:
+    external: true
+
+services:
+  # ---------------------------------------------------------------------------
+  # App web: recebe tráfego via Caddy, fala com o Postgres.
+  # ---------------------------------------------------------------------------
+  app:
+    image: ghcr.io/SEU_USUARIO/PROJETO:latest
+    restart: unless-stopped
+    env_file: .env
+
+    # NUNCA use `ports:` aqui. O Caddy alcança este container pela rede "edge"
+    # usando o alias abaixo. Publicar porta no host fura o ufw (o Docker
+    # escreve iptables por fora dele) e expõe o serviço na internet.
+    networks:
+      edge:
+        # Alias único no cluster. Sem isso, dois projetos com um serviço
+        # chamado "app" colidem no DNS da rede compartilhada e o Caddy
+        # roteia para o container errado.
+        aliases: [PROJETO-app]
+      data: {}
+
+    # Teto de memória: um vazamento num projeto não derruba o servidor inteiro.
+    # Ajuste conforme a app; some tudo e deixe ~1 GB de folga para o sistema.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # Worker / bot / cron. Sem porta, sem rede "edge" — não é alcançável de fora.
+  # Apague este bloco se o projeto não tiver processo de background.
+  # ---------------------------------------------------------------------------
+  worker:
+    image: ghcr.io/SEU_USUARIO/PROJETO:latest
+    restart: unless-stopped
+    command: ["node", "worker.js"]
+    env_file: .env
+    networks:
+      data: {}
+    depends_on:
+      app:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 256M

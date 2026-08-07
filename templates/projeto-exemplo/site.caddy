@@ -1,0 +1,15 @@
+# =============================================================================
+# Destino: /opt/stacks/_infra/sites/<projeto>.caddy
+#
+# Depois de criar:
+#   cd /opt/stacks/_infra && docker compose exec caddy \
+#       caddy reload -c /etc/caddy/Caddyfile
+# =============================================================================
+
+PROJETO.{$DOMINIO} {
+	import comum
+
+	# O alvo é o alias definido em networks.edge.aliases do projeto,
+	# seguido da porta INTERNA do container (não precisa estar publicada).
+	reverse_proxy PROJETO-app:3000
+}

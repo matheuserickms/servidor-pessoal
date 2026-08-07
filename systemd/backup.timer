@@ -1,0 +1,22 @@
+# Destino: /etc/systemd/system/backup.timer
+#
+#   systemctl enable --now backup.timer
+#   systemctl list-timers backup.timer     # confere o próximo disparo
+#   journalctl -u backup.service -n 50     # confere a última execução
+
+[Unit]
+Description=Dispara o backup diário
+
+[Timer]
+# 03:10 no horário do servidor (UTC, salvo se você mudar o timezone).
+OnCalendar=*-*-* 03:10:00
+
+# Espalha o disparo em até 20 min: evita bater no mesmo minuto que milhares
+# de outros clientes do provedor de storage.
+RandomizedDelaySec=20m
+
+# Se o servidor estava desligado na hora marcada, roda assim que voltar.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

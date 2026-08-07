@@ -1,0 +1,66 @@
+# =============================================================================
+# Destino no servidor: /opt/stacks/_infra/Caddyfile
+#
+# O Caddy tira certificado do Let's Encrypt sozinho, renova sozinho e
+# redireciona HTTP para HTTPS sozinho. Não há nada de TLS para configurar.
+#
+# Depois de editar:  docker compose exec caddy caddy reload -c /etc/caddy/Caddyfile
+# (reload é sem downtime; `restart` derruba as conexões à toa)
+# =============================================================================
+
+{
+	email {$ACME_EMAIL}
+
+	# Descomente para testar contra o staging do Let's Encrypt. O certificado
+	# fica inválido no navegador, mas você não queima o rate limit de produção
+	# (5 falhas por hora por domínio) enquanto ajusta o DNS.
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+
+	admin 127.0.0.1:2019
+}
+
+# -----------------------------------------------------------------------------
+# Snippet reutilizado por todos os sites. Definido ANTES dos imports, senão
+# os arquivos importados não enxergam.
+# -----------------------------------------------------------------------------
+(comum) {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10mb
+			roll_keep 3
+		}
+		format json
+	}
+}
+
+# -----------------------------------------------------------------------------
+# Painel de monitoramento.
+# -----------------------------------------------------------------------------
+status.{$DOMINIO} {
+	import comum
+	reverse_proxy uptime-kuma:3001
+}
+
+# -----------------------------------------------------------------------------
+# Domínio raiz: por ora só responde para provar que o TLS funciona.
+# Troque pelo seu site principal quando tiver um.
+# -----------------------------------------------------------------------------
+{$DOMINIO} {
+	import comum
+	respond "no ar" 200
+}
+
+# -----------------------------------------------------------------------------
+# Um arquivo .caddy por projeto em ./sites/ — adicionar projeto não mexe aqui.
+# -----------------------------------------------------------------------------
+import sites/*.caddy
