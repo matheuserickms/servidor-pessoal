@@ -318,13 +318,15 @@ outro lugar.
 
 Por isso, duas rotinas que não são opcionais neste modelo:
 
-1. Um monitor no Uptime Kuma do tipo **Push**, que o `backup.sh` pinga ao
-   terminar. Se o backup falhar ou parar, você é avisado em vez de descobrir
-   no dia do desastre. Crie o monitor no Kuma, copie a URL e adicione a última
-   linha do `backup.sh`:
+1. Um monitor no Uptime Kuma do tipo **Push**. O `backup.sh` já pinga ao
+   terminar — basta criar o monitor, copiar a URL e pôr em `/etc/backup.env`:
    ```bash
-   curl -fsS --max-time 10 "https://status.SEU_DOMINIO/api/push/XXXXX" >/dev/null
+   export BACKUP_PING_URL="https://status.SEU_DOMINIO/api/push/XXXXX"
    ```
+   O ping acontece só no fim, depois de dump, upload e `restic check`. Se
+   qualquer etapa falhar, o script aborta antes e o Kuma deixa de receber
+   sinal — que é justamente o alarme. Enquanto a variável estiver vazia, o
+   script avisa no log que nada vai te alertar se o backup parar.
 2. `restic snapshots` de vez em quando, só para ver que a data do último
    snapshot é de ontem e não de três meses atrás.
 

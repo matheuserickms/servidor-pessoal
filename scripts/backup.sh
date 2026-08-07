@@ -89,4 +89,28 @@ restic check
 # Dumps locais servem só de cache para restore rápido; o que vale está remoto.
 find "$DUMP_DIR" -name 'pg-*.sql.gz' -mtime +2 -delete
 
+# ---------------------------------------------------------------------------
+# 5. Avisa o monitor de que o backup terminou.
+#
+#    Sem /opt/stacks no git, um backup que para silenciosamente leva junto as
+#    senhas dos databases — geradas aleatoriamente e sem cópia em outro lugar.
+#    O ping só acontece aqui, DEPOIS de tudo ter dado certo: qualquer falha
+#    acima aborta o script pelo `set -e` e o monitor deixa de receber sinal,
+#    que é exatamente o alarme que se quer.
+#
+#    Crie um monitor do tipo "Push" no Uptime Kuma e ponha a URL dele em
+#    BACKUP_PING_URL, dentro de /etc/backup.env.
+# ---------------------------------------------------------------------------
+if [ -n "${BACKUP_PING_URL:-}" ]; then
+	if curl -fsS --max-time 10 "$BACKUP_PING_URL" >/dev/null; then
+		log "monitor avisado"
+	else
+		# Não falha o backup por causa disto: o backup está feito e íntegro.
+		# O silêncio no Kuma já sinaliza que algo precisa de atenção.
+		log "AVISO: backup ok, mas o ping para o monitor falhou"
+	fi
+else
+	log "AVISO: BACKUP_PING_URL não definida — nada vai te avisar se este backup parar"
+fi
+
 log "concluído"
