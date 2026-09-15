@@ -17,7 +17,7 @@ diário criptografado para fora do provedor.
 ```
         internet
            │
-    Hetzner Cloud Firewall        ← 22, 80, 443 e nada mais
+    Hetzner Cloud Firewall        ← 22, 2222, 80, 443 e nada mais
            │
     ┌──────┴──────────────────────────────────┐
     │  CX23 · Ubuntu 24.04 · x86_64           │
@@ -121,11 +121,12 @@ pré-pagamento), de horas a um dia útil — não deixe para a véspera.
 ### 4.1 Firewall primeiro
 
 **Firewalls → Create Firewall**, regras de entrada (o console já traz 22/tcp
-e ICMP; adicione as outras três). Tudo o mais é bloqueado:
+e ICMP; adicione as outras quatro). Tudo o mais é bloqueado:
 
 | Protocolo | Porta | Origem |
 |---|---|---|
 | TCP | 22 | Any IPv4, Any IPv6 |
+| TCP | 2222 | Any IPv4, Any IPv6 |
 | TCP | 80 | Any IPv4, Any IPv6 |
 | TCP | 443 | Any IPv4, Any IPv6 |
 | UDP | 443 | Any IPv4, Any IPv6 |
@@ -188,7 +189,7 @@ Verificações que valem os 30 segundos:
 docker run --rm hello-world          # docker funciona sem sudo
 docker network ls | grep -E 'edge|data'
 free -h                              # deve mostrar 2 Gi de swap
-sudo ufw status                      # 22, 80, 443/tcp, 443/udp
+sudo ufw status                      # 22, 2222, 80, 443/tcp, 443/udp
 sudo fail2ban-client status sshd     # jail ativo (não só o serviço)
 ssh root@SEU_IP                      # DEVE falhar — se entrar, algo deu errado
 ```
@@ -196,9 +197,10 @@ ssh root@SEU_IP                      # DEVE falhar — se entrar, algo deu errad
 **Se o SSH dá timeout mas `ping` responde**, antes de culpar o servidor:
 `nc -zv github.com 22`. Redes corporativas e de convidados costumam
 bloquear saída na porta 22 para qualquer destino — o sintoma é idêntico ao
-de um firewall no servidor. Teste de outro lugar (`check-host.net`, hotspot
-do celular) antes de mexer em qualquer coisa. Aconteceu no primeiro acesso
-do `srv01` (Wi-Fi `#GSI`).
+de um firewall no servidor. Por isso o sshd também escuta na **2222**
+(`ssh -p 2222 matheus@SEU_IP`); a 22 continua para o dia a dia. Aconteceu
+no primeiro acesso do `srv01` (Wi-Fi `#GSI`), antes de a 2222 existir — a
+saída foi hotspot do celular.
 
 **Se `cloud-init status --wait` nunca terminar ou `ssh matheus@` falhar**, a
 rota manual é o `provisionar.sh` — ele faz exatamente o que o cloud-init

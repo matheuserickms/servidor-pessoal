@@ -73,6 +73,17 @@ write_files:
   # SSH: só chave, sem root, sem senha.
   # O sshd do Ubuntu já faz Include /etc/ssh/sshd_config.d/*.conf
   # ---------------------------------------------------------------------------
+  # Port 2222 além da 22: redes corporativas/de convidados costumam bloquear
+  # saída na 22 (sintoma: timeout no ssh com ping ok). Aconteceu no primeiro
+  # acesso ao srv01 e exigiu console VNC + reset de senha do root para
+  # abrir a porta — melhor já nascer com ela. Liberar também no firewall de
+  # borda do provedor.
+  - path: /etc/ssh/sshd_config.d/98-porta-alternativa.conf
+    permissions: "0644"
+    content: |
+      Port 22
+      Port 2222
+
   - path: /etc/ssh/sshd_config.d/99-hardening.conf
     permissions: "0644"
     content: |
@@ -204,6 +215,7 @@ runcmd:
     ufw default deny incoming
     ufw default allow outgoing
     ufw allow 22/tcp comment 'ssh'
+    ufw allow 2222/tcp comment 'ssh-alt'
     ufw allow 80/tcp comment 'http'
     ufw allow 443/tcp comment 'https'
     ufw allow 443/udp comment 'http3'
@@ -254,7 +266,11 @@ runcmd:
     chmod 700 /var/backups/postgres
 
   # --- Aplica SSH e fail2ban -------------------------------------------------
-  - systemctl restart ssh
+  # daemon-reload: no Ubuntu 24.04 o sshd é ativado por socket, e é um
+  # generator do systemd que lê os `Port` do sshd_config — sem isso a 2222
+  # não abre.
+  - systemctl daemon-reload
+  - systemctl restart ssh.socket ssh
   - systemctl enable --now fail2ban
 
 final_message: "Servidor pronto em $UPTIME segundos. Suba os stacks em /opt/stacks."
