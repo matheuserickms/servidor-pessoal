@@ -3,7 +3,11 @@
 # Cria um projeto novo: database + role dedicados no Postgres, diretório do
 # stack a partir do template e a entrada de proxy no Caddy.
 #
-#   ./novo-projeto.sh meu-blog
+#   ./novo-projeto.sh meu-blog                    # https://meu-blog.<DOMINIO>
+#   ./novo-projeto.sh meu-blog meublog.com.br     # domínio próprio (+ www.)
+#
+# Com domínio próprio, o DNS dele (A/AAAA de @ e www, ou wildcard) precisa
+# apontar para este servidor — o script só registra a rota no Caddy.
 #
 # Idempotente o suficiente para ser seguro: aborta se o diretório do stack já
 # existir, e não recria database/role que já existam.
@@ -20,11 +24,22 @@ erro() {
 }
 
 PROJETO="${1:-}"
-[[ -n "$PROJETO" ]] || erro "uso: $0 <slug-do-projeto>"
+DOMINIO_PROPRIO="${2:-}"
+[[ -n "$PROJETO" ]] || erro "uso: $0 <slug-do-projeto> [dominio-proprio]"
 
 # Slug restrito: vira nome de database, de role e de subdomínio.
 [[ "$PROJETO" =~ ^[a-z][a-z0-9-]{1,30}$ ]] ||
 	erro "slug inválido: use minúsculas, números e hífen, começando por letra"
+
+if [[ -n "$DOMINIO_PROPRIO" ]]; then
+	[[ "$DOMINIO_PROPRIO" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$ ]] ||
+		erro "domínio inválido: $DOMINIO_PROPRIO (minúsculas, sem https:// nem barra)"
+	HOSTS="$DOMINIO_PROPRIO, www.$DOMINIO_PROPRIO"
+	URL_FINAL="https://$DOMINIO_PROPRIO"
+else
+	HOSTS="$PROJETO.{\$DOMINIO}"
+	URL_FINAL="https://$PROJETO.<seu-dominio>"
+fi
 
 [[ -d "$STACKS_DIR/$PROJETO" ]] && erro "$STACKS_DIR/$PROJETO já existe"
 [[ -d "$INFRA_DIR" ]] || erro "stack de infra não encontrado em $INFRA_DIR"
@@ -55,7 +70,8 @@ sed -e "s|postgres://PROJETO:SENHA_AQUI@postgres:5432/PROJETO|postgres://$DB_NAM
 chmod 600 "$STACKS_DIR/$PROJETO/.env"
 
 echo "==> registrando proxy em $INFRA_DIR/sites/$PROJETO.caddy"
-sed "s/PROJETO/$PROJETO/g" "$TEMPLATE_DIR/site.caddy" >"$INFRA_DIR/sites/$PROJETO.caddy"
+sed -e "s|HOSTS|$HOSTS|" -e "s/PROJETO/$PROJETO/g" \
+	"$TEMPLATE_DIR/site.caddy" >"$INFRA_DIR/sites/$PROJETO.caddy"
 
 cat <<-FIM
 
@@ -68,7 +84,7 @@ cat <<-FIM
 	  4. recarregar o proxy:
 	       cd $INFRA_DIR && docker compose exec caddy caddy reload -c /etc/caddy/Caddyfile
 
-	o site responde em https://$PROJETO.<seu-dominio> assim que o DNS resolver.
+	o site responde em $URL_FINAL assim que o DNS resolver.
 	a senha do banco já está no .env — ela não é recuperável depois, então não
 	apague o arquivo sem guardar.
 FIM

@@ -1,12 +1,17 @@
 # =============================================================================
 # Destino: /opt/stacks/_infra/sites/<projeto>.caddy
 #
+# HOSTS é preenchido pelo novo-projeto.sh: "PROJETO.{$DOMINIO}" (subdomínio do
+# domínio principal, o default) ou "dominio.com.br, www.dominio.com.br" quando
+# o projeto tem domínio próprio. Vários domínios no mesmo servidor é só isso:
+# o Caddy roteia pelo nome e pede um certificado para cada um.
+#
 # Depois de criar:
 #   cd /opt/stacks/_infra && docker compose exec caddy \
 #       caddy reload -c /etc/caddy/Caddyfile
 # =============================================================================
 
-PROJETO.{$DOMINIO} {
+HOSTS {
 	import comum
 
 	# O alvo é o alias definido em networks.edge.aliases do projeto,

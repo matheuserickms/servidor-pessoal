@@ -351,6 +351,17 @@ docker compose exec caddy caddy reload -c /etc/caddy/Caddyfile
 
 Pronto: `https://meu-blog.SEU_DOMINIO`.
 
+**Domínio próprio para um projeto** (vários domínios no mesmo servidor):
+
+```bash
+~/servidor/scripts/novo-projeto.sh loja lojadamaria.com.br
+```
+
+Gera a rota como `lojadamaria.com.br, www.lojadamaria.com.br` em vez de
+subdomínio. O DNS desse domínio é por sua conta: zona nova na Cloudflare
+(passo 3, mesmos `A/AAAA` de `@` e `*` apontando para este servidor) e NS
+trocados no registrador. O Caddy pede o certificado na primeira visita.
+
 ---
 
 ## Operação
