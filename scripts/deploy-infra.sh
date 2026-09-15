@@ -9,6 +9,7 @@
 #   - /opt/stacks/_infra/.env         (senha do banco, gerada no servidor)
 #   - /opt/stacks/_infra/sites/*.caddy (rotas dos projetos, geradas lá)
 #   - /opt/stacks/<projeto>/          (os projetos em si)
+#   - scripts/oci.env                  (OCIDs da tenancy, só serve no notebook)
 #
 # Rode do seu notebook, de dentro do repo.
 # =============================================================================
@@ -37,6 +38,11 @@ ssh "$DESTINO" 'test -e /opt/stacks/_infra/sites/_placeholder.caddy' ||
 echo "==> enviando scripts, templates e units do systemd"
 scp -r scripts templates systemd "$DESTINO:~/servidor/"
 ssh "$DESTINO" 'chmod +x ~/servidor/scripts/*.sh'
+
+# scripts/oci.env tem os OCIDs da tenancy — só serve para criar-instancia.sh,
+# que só roda do notebook. Não tem função nenhuma no servidor; melhor não
+# deixar rastro dele lá.
+ssh "$DESTINO" 'rm -f ~/servidor/scripts/oci.env'
 
 # O .env do servidor pode não existir ainda (primeiro deploy).
 if ! ssh "$DESTINO" 'test -s /opt/stacks/_infra/.env'; then

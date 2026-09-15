@@ -55,11 +55,14 @@ services:
 
   # ---------------------------------------------------------------------------
   # Um Postgres para todos os projetos, um database por projeto.
-  # Cada instância extra de Postgres custaria ~150 MB fixos de RAM — em 4 GB
-  # isso é desperdício. Isolamento fica por database + role.
+  # Cada instância extra de Postgres custaria ~150 MB fixos de RAM.
+  # Isolamento fica por database + role.
   #
-  # Os parâmetros abaixo são dimensionados para 4 GB. Se subir para CAX21
-  # (8 GB), dobre shared_buffers e effective_cache_size.
+  # Parâmetros dimensionados para os 4 GB da Hetzner CAX11 — valores
+  # deliberadamente conservadores (bem abaixo de 25%/66% de regra geral):
+  # a RAM é compartilhada com Caddy, Uptime Kuma e os containers dos
+  # projetos, não é uma caixa dedicada só ao Postgres. Se um dia a RAM
+  # mudar (ex.: upgrade de servidor), mexa nos dois primeiros valores.
   # ---------------------------------------------------------------------------
   postgres:
     image: postgres:17-alpine

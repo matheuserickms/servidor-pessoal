@@ -1,14 +1,27 @@
 #cloud-config
 # =============================================================================
-# Hetzner Cloud CAX11 (ARM64 Ampere) — Ubuntu 24.04 LTS "noble"
+# Serve para os dois provedores em jogo neste repo — o mesmo arquivo:
 #
-# COMO USAR: ao criar o servidor no console da Hetzner, abra a seção
-# "Cloud config" e cole este arquivo INTEIRO. Ele roda uma única vez, no
-# primeiro boot. Depois de criado, editar aqui não muda nada no servidor.
+#   Hetzner Cloud CX23 (x86, 4 GB) ou CAX11 (ARM64, 4 GB) — Ubuntu 24.04 "noble"
+#     Cole o arquivo INTEIRO no console, em "Cloud config", na criação do
+#     servidor. Nada aqui depende da arquitetura (o repo do Docker é
+#     escolhido por `dpkg --print-architecture`).
 #
-# ANTES DE COLAR, troque:
-#   1. A chave em ssh_authorized_keys pela sua chave pública
-#   2. O hostname, se quiser outro nome
+#   Oracle Cloud VM.Standard.A1.Flex (2 OCPU/12 GB ou 1 OCPU/6 GB) — o loop
+#   scripts/criar-instancia.sh passa este arquivo via `--user-data-file`
+#   sozinho, sem precisar colar nada.
+#
+# De um jeito ou de outro, roda uma única vez, no primeiro boot — editar
+# aqui depois não muda nada numa instância já criada. O bloco de growfs e o
+# de firewall abaixo são inofensivos no provedor onde não fazem falta (ex.:
+# a Hetzner já entrega a partição do tamanho certo, então o growpart/resize2fs
+# apenas não encontra nada para fazer).
+#
+# ANTES DE CRIAR O SERVIDOR: o firewall de borda do provedor (Hetzner Cloud
+# Firewall ou Security List da OCI) já deve liberar 22/80/443 tcp + 443 udp.
+# O bloco de firewall abaixo purga qualquer iptables-persistent da imagem, e
+# é o firewall de borda (fora da VM) que cobre a janela de segundos até o
+# ufw subir.
 # =============================================================================
 
 hostname: srv01
@@ -22,6 +35,10 @@ groups:
   - docker
 
 users:
+  # O usuário "ubuntu" da imagem do OCI continua existindo, com a chave que
+  # você colar no campo "Add SSH keys" do console. É a porta de emergência:
+  # no OCI não há console web de recuperação, só o Console Connection serial.
+  - default
   - name: matheus
     gecos: Matheus
     groups: [sudo, docker]
@@ -29,8 +46,7 @@ users:
     sudo: ["ALL=(ALL) NOPASSWD:ALL"]
     lock_passwd: true
     ssh_authorized_keys:
-      # >>> TROQUE PELA SUA CHAVE PÚBLICA (conteúdo de ~/.ssh/id_ed25519.pub) <<<
-      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI_TROQUE_ISSO matheus@notebook
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGRFUfY+0mVkZYN3vkddmu+lCJuiBmwnaD6Vcqmu/uD+ matheus.erick.97@gmail.com
 
 # Desabilita a conta root para login remoto. O usuário acima tem sudo.
 disable_root: true
@@ -45,6 +61,7 @@ packages:
   - git
   - ufw
   - fail2ban
+  - cloud-guest-utils
   - unattended-upgrades
   - restic
   - htop
@@ -103,8 +120,9 @@ write_files:
       Unattended-Upgrade::Remove-Unused-Dependencies "true";
 
   # ---------------------------------------------------------------------------
-  # Com 4 GB de RAM o swap não é opcional. swappiness baixo para o kernel
-  # só recorrer ao swap sob pressão real, não por preferência.
+  # Com 4 GB o swap não é opcional (com 12 GB na Oracle seria só folga).
+  # swappiness baixo para o kernel só recorrer a ele sob pressão real, não
+  # por preferência.
   # ---------------------------------------------------------------------------
   - path: /etc/sysctl.d/99-servidor.conf
     permissions: "0644"
@@ -114,8 +132,8 @@ write_files:
       net.core.somaxconn = 1024
 
   # ---------------------------------------------------------------------------
-  # Rotação de log do Docker. Sem isso, um container tagarela enche os
-  # 40 GB de disco em algumas semanas e o servidor para de responder.
+  # Rotação de log do Docker. Sem isso, um container tagarela enche o disco
+  # e o servidor para de responder.
   # ---------------------------------------------------------------------------
   - path: /etc/docker/daemon.json
     permissions: "0644"
@@ -130,6 +148,67 @@ write_files:
       }
 
 runcmd:
+  # --- Expande o filesystem para o tamanho real do boot volume --------------
+  # Específico do OCI: o boot volume de 100 GB não é enxergado pelo filesystem
+  # automaticamente. Sem isto, `df -h /` mostra ~45 GB.
+  #
+  # O oci-growfs só existe nas imagens que trazem o oci-utils. O fallback com
+  # growpart + resize2fs funciona em qualquer Ubuntu e é idempotente: se a
+  # partição já ocupa o disco, os dois comandos saem sem fazer nada.
+  - |
+    set -x
+    if [ -x /usr/libexec/oci-growfs ]; then
+      /usr/libexec/oci-growfs -y
+    else
+      ROOT_SRC="$(findmnt -no SOURCE /)"
+      DISCO="$(lsblk -no PKNAME "$ROOT_SRC" | tr -d ' ')"
+      PART="$(echo "$ROOT_SRC" | grep -o '[0-9]*$')"
+      if [ -n "$DISCO" ] && [ -n "$PART" ]; then
+        growpart "/dev/$DISCO" "$PART" || true
+        resize2fs "$ROOT_SRC" || true
+      fi
+    fi
+    df -h /
+
+  # --- Firewall, parte 1: remover o iptables da imagem da Oracle -------------
+  # A imagem Ubuntu do OCI vem com iptables-persistent aplicando REJECT em
+  # tudo menos 22, e a Oracle desabilita o ufw para não conflitar com isso.
+  # Manter as duas ferramentas significa lembrar das duas para sempre.
+  # Decisão do setup: uma camada só na VM (ufw), e a Security List do VCN
+  # como a defesa real, fora da VM, onde o Docker não alcança.
+  #
+  # Roda ANTES do Docker de propósito: o flush abaixo apagaria as chains que
+  # o Docker cria.
+  - |
+    set -x
+    systemctl stop netfilter-persistent 2>/dev/null || true
+    systemctl disable netfilter-persistent 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y netfilter-persistent iptables-persistent || true
+    rm -f /etc/iptables/rules.v4 /etc/iptables/rules.v6
+    for cmd in iptables ip6tables; do
+      $cmd -P INPUT ACCEPT
+      $cmd -P FORWARD ACCEPT
+      $cmd -P OUTPUT ACCEPT
+      $cmd -F
+      $cmd -X
+    done
+
+  # --- Firewall, parte 2: ufw como camada única na VM ------------------------
+  # ATENÇÃO: o Docker escreve regras de iptables direto e IGNORA o ufw.
+  # Se algum compose publicar uma porta com `ports:`, ela fica exposta na
+  # internet mesmo com o ufw negando. Por isso a Security List do VCN — que
+  # roda fora da VM — é a defesa que vale; o ufw aqui é a segunda camada.
+  # Regra de ouro do setup: só o Caddy usa `ports:`.
+  - |
+    set -x
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 22/tcp comment 'ssh'
+    ufw allow 80/tcp comment 'http'
+    ufw allow 443/tcp comment 'https'
+    ufw allow 443/udp comment 'http3'
+    ufw --force enable
+
   # --- swap de 2 GB ---------------------------------------------------------
   - |
     set -x
@@ -166,22 +245,6 @@ runcmd:
     set -x
     docker network create edge 2>/dev/null || true
     docker network create data 2>/dev/null || true
-
-  # --- Firewall interno ------------------------------------------------------
-  # ATENÇÃO: o Docker escreve regras de iptables direto e IGNORA o ufw.
-  # Se algum compose publicar uma porta com `ports:`, ela fica exposta na
-  # internet mesmo com o ufw negando. Por isso o Hetzner Cloud Firewall (na
-  # borda, fora da VM) é a defesa que vale — o ufw aqui é só a segunda camada.
-  # Regra de ouro do setup: só o Caddy usa `ports:`.
-  - |
-    set -x
-    ufw default deny incoming
-    ufw default allow outgoing
-    ufw allow 22/tcp comment 'ssh'
-    ufw allow 80/tcp comment 'http'
-    ufw allow 443/tcp comment 'https'
-    ufw allow 443/udp comment 'http3'
-    ufw --force enable
 
   # --- Diretório dos stacks --------------------------------------------------
   - |

@@ -1,11 +1,16 @@
-# Servidor pessoal — Hetzner CAX11
+# Servidor pessoal — Hetzner Cloud (CX23)
 
 Runbook do zero até o primeiro projeto no ar. Siga na ordem; cada passo
 assume o anterior pronto.
 
+> Existe um caminho alternativo, de custo zero, na Oracle Cloud Always Free —
+> mas em 13 dias de tentativas automáticas (set/2026) a Oracle nunca liberou
+> capacidade em São Paulo. Está documentado no [apêndice](#apêndice-oracle-cloud-always-free-opcional)
+> como loteria opcional, não como plano.
+
 ## O que este setup é
 
-Um VPS ARM de 4 GB rodando Docker, com Caddy fazendo proxy reverso e TLS
+Um VPS de 4 GB rodando Docker, com Caddy fazendo proxy reverso e TLS
 automático, um Postgres compartilhado (um database por projeto) e backup
 diário criptografado para fora do provedor.
 
@@ -15,7 +20,7 @@ diário criptografado para fora do provedor.
     Hetzner Cloud Firewall        ← 22, 80, 443 e nada mais
            │
     ┌──────┴──────────────────────────────────┐
-    │  CAX11 · Ubuntu 24.04 · ARM64           │
+    │  CX23 · Ubuntu 24.04 · x86_64           │
     │                                         │
     │   Caddy ──rede "edge"──► app-a, app-b   │
     │     │                       │           │
@@ -29,14 +34,15 @@ diário criptografado para fora do provedor.
              Cloudflare R2 / Backblaze B2
 ```
 
-**Custo mensal:** ~€6,49 (CAX11 + IPv4) ≈ R$ 43, mais IOF e spread do cartão.
-Conte ~R$ 46. Domínio à parte, ~R$ 40–90/ano.
+**Custo mensal:** US$ 7,09 (CX23 6,49 + IPv4 0,60), sem IVA, cobrado por
+hora — ~R$ 40 com IOF. Domínio à parte, ~R$ 40–90/ano.
 
 ## Arquivos
 
 | Arquivo | Vai para | O que faz |
 |---|---|---|
-| `cloud-init.yaml` | campo "Cloud config" na criação | provisiona a máquina inteira no primeiro boot |
+| `cloud-init.yaml` | campo "Cloud config" na criação do servidor | provisiona a máquina inteira no primeiro boot (serve para Hetzner e OCI) |
+| `scripts/provisionar.sh` | roda por SSH no servidor, sob demanda | equivalente manual do cloud-init, para quando ele não roda |
 | `infra/compose.yml` | `/opt/stacks/_infra/` | Caddy + Postgres + Uptime Kuma |
 | `infra/Caddyfile` | `/opt/stacks/_infra/` | roteamento e TLS |
 | `infra/.env.example` | `/opt/stacks/_infra/.env` | domínio, e-mail ACME, senha do banco |
@@ -48,6 +54,7 @@ Conte ~R$ 46. Domínio à parte, ~R$ 40–90/ano.
 | `scripts/restore-stacks.sh` | `/usr/local/bin/` | restaura a **configuração** de um snapshot |
 | `scripts/backup.env.example` | `/etc/backup.env` | credenciais do bucket e chave de cripto |
 | `systemd/backup.{service,timer}` | `/etc/systemd/system/` | agenda o backup |
+| `scripts/criar-instancia.sh`, `scripts/oci.env` | só no notebook | loop da Oracle (apêndice) |
 
 ---
 
@@ -60,29 +67,45 @@ ssh-keygen -t ed25519 -C "matheus@notebook"
 cat ~/.ssh/id_ed25519.pub
 ```
 
-Cole essa saída em `ssh_authorized_keys` no `cloud-init.yaml`. **O setup
-desabilita login por senha** — se a chave estiver errada, você fica de fora e
-só o console web da Hetzner te salva.
+Essa chave vai para **dois** lugares (passo 4): o `cloud-init.yaml`
+(usuário `matheus`, o de uso normal) e o campo "SSH keys" do console da
+Hetzner (usuário `root`, que o cloud-init desabilita em seguida — mas fica
+disponível pelo console VNC da Hetzner em emergência). **O setup desabilita
+login por senha** — se a chave estiver errada, você fica de fora.
 
 ## 2. Domínio
 
 Registre em qualquer registrador. Duas opções sensatas:
 
 - **`.com.br`** no [registro.br](https://registro.br) — ~R$ 40/ano, exige CPF
+  (ou CNPJ, o que mantém seus dados fora do WHOIS público)
 - **`.dev`** no Cloudflare Registrar — ~R$ 90/ano, vendido a preço de custo, e
   o TLD inteiro está no HSTS preload (HTTPS forçado no navegador de graça)
 
 ## 3. DNS na Cloudflare
 
-Crie a conta, adicione o domínio, troque os nameservers no registrador.
-Depois crie dois registros (o IP você só terá no passo 4 — volte aqui):
+Crie a conta, **Adicionar um site → Conectar um domínio**, plano Free. A
+Cloudflare varre o DNS atual e importa o que achar (no registro.br, um
+domínio novo costuma vir com `MX .` + SPF `-all` + DMARC — registros
+anti-spoofing que dizem "não envio e-mail"; mantenha). Depois adicione,
+todos com proxy **desligado** (nuvem cinza, "Somente DNS"):
 
-| Tipo | Nome | Conteúdo | Proxy |
-|---|---|---|---|
-| A | `@` | IP do servidor | **DNS only** (cinza) |
-| A | `*` | IP do servidor | **DNS only** (cinza) |
+| Tipo | Nome | Conteúdo |
+|---|---|---|
+| A | `@` | IPv4 do servidor |
+| A | `*` | IPv4 do servidor |
+| AAAA | `@` | IPv6 do servidor (`…::1` do /64 que a Hetzner dá) |
+| AAAA | `*` | IPv6 do servidor |
 
 O wildcard faz todo subdomínio futuro funcionar sem mexer em DNS de novo.
+Os IPs você só tem depois do passo 4 — crie a zona agora, volte para os
+registros depois.
+
+Ao final a Cloudflare entrega **dois nameservers** (`xxx.ns.cloudflare.com`).
+No registro.br: **Domínios → seu domínio → DNS → Alterar servidores DNS**,
+troque os `a/b.auto.dns.br` por eles. Armadilha: se você mexeu no DNS do
+domínio há pouco (ou ele é novo), o registro.br trava a delegação por ~2h
+("servidores DNS em transição"). Não tem atalho, é esperar.
 
 **Mantenha o proxy desligado no início.** Com a nuvem laranja ligada, o
 Cloudflare termina o TLS por você e o Caddy passa a ver todo tráfego vindo do
@@ -91,38 +114,63 @@ certificado. Ligue depois, se quiser esconder o IP de origem.
 
 ## 4. Criar o servidor
 
-No console da Hetzner: **Add Server**.
+[console.hetzner.com](https://console.hetzner.com) → projeto → **Create
+resource → Server**. Conta nova passa por verificação manual (documento ou
+pré-pagamento), de horas a um dia útil — não deixe para a véspera.
 
-- **Location:** Ashburn, VA (`ash`) — ~130 ms do Brasil contra ~200 ms da Alemanha
-- **Image:** Ubuntu 24.04
-- **Type:** aba **Arm64**, `CAX11` (2 vCPU, 4 GB, 40 GB)
-- **Networking:** IPv4 + IPv6 (o IPv4 custa €0,50/mês; sem ele, metade da
-  internet não te alcança)
-- **Cloud config:** cole o `cloud-init.yaml` inteiro, já com sua chave
-- **Firewalls:** crie um com as regras abaixo e aplique
+### 4.1 Firewall primeiro
 
-Regras de entrada do Cloud Firewall (tudo o mais é bloqueado):
+**Firewalls → Create Firewall**, regras de entrada (o console já traz 22/tcp
+e ICMP; adicione as outras três). Tudo o mais é bloqueado:
 
 | Protocolo | Porta | Origem |
 |---|---|---|
-| TCP | 22 | `0.0.0.0/0`, `::/0` |
-| TCP | 80 | `0.0.0.0/0`, `::/0` |
-| TCP | 443 | `0.0.0.0/0`, `::/0` |
-| UDP | 443 | `0.0.0.0/0`, `::/0` |
+| TCP | 22 | Any IPv4, Any IPv6 |
+| TCP | 80 | Any IPv4, Any IPv6 |
+| TCP | 443 | Any IPv4, Any IPv6 |
+| UDP | 443 | Any IPv4, Any IPv6 |
+| ICMP | — | Any IPv4, Any IPv6 |
 
-> Se você tivesse IP fixo, restringir a 22 à sua origem seria melhor. Com IP
-> residencial dinâmico, isso te tranca do lado de fora no dia que o IP mudar —
-> o `fail2ban` cobre o risco de força bruta.
+A regra UDP é o HTTP/3 do Caddy — fácil de esquecer, e o sintoma (HTTP/2
+funciona, HTTP/3 falha em silêncio) não aponta óbvio para "faltou uma regra
+de firewall".
 
-**Conta nova na Hetzner costuma passar por verificação manual** (documento ou
-pré-pagamento via PayPal), e isso pode levar de horas a um dia útil. Não deixe
-para a véspera de precisar.
+**O firewall precisa existir antes do servidor.** O `cloud-init.yaml` sobe o
+`ufw` só depois do `apt upgrade`; até lá, é o Cloud Firewall — fora da VM —
+que protege.
 
-Anote o IP e volte ao passo 3 para criar os registros DNS.
+> Com IP fixo, restringir a 22 à sua origem seria melhor. Com IP residencial
+> dinâmico, isso te tranca do lado de fora no dia que o IP mudar — o
+> `fail2ban` cobre o risco de força bruta (em 1h de vida o `srv01` já tinha
+> 120 tentativas e 1 IP banido).
+
+### 4.2 O servidor
+
+- **Location:** Nuremberg (ou Falkenstein/Helsinki — mesmo preço, ~150 ms do
+  Brasil). Ashburn/Hillsboro (EUA) **não** têm a categoria barata: o mais
+  barato lá é CPX11 com 2 GB por US$ 20 — 3× o preço por metade da RAM.
+- **Image:** Ubuntu **24.04** (o default do console é o LTS mais novo; o
+  cloud-init foi validado em 24.04)
+- **Type:** Shared → **Cost-Optimized** → x86 → **CX23** (2 vCPU, 4 GB,
+  40 GB, 20 TB). O CAX11 ARM (aba Arm64) tem as mesmas specs por US$ 0,50 a
+  mais e costuma aparecer "Not available" nas três locations; se estiver
+  disponível, serve igual — o cloud-init é agnóstico de arquitetura.
+- **Networking:** IPv4 + IPv6 (IPv4 custa US$ 0,60/mês; sem ele metade da
+  internet não te alcança)
+- **SSH keys:** Add SSH key → cole sua `id_ed25519.pub`
+- **Firewalls:** marque o firewall do 4.1
+- **Cloud config:** cole o `cloud-init.yaml` **inteiro**, do `#cloud-config`
+  ao `final_message`
+- **Name:** `srv01`
+
+**Create & Buy now.** O IP aparece na lista de servidores em segundos; o
+IPv6 vem como um `/64` — o endereço do servidor é o `::1` dele.
+
+Volte ao passo 3 e crie os registros DNS.
 
 ## 5. Primeiro acesso
 
-O cloud-init leva 2–4 minutos após o servidor aparecer como "running".
+O cloud-init leva ~1–3 minutos (o `srv01` levou 72 s). Depois:
 
 ```bash
 ssh matheus@SEU_IP
@@ -130,8 +178,8 @@ ssh matheus@SEU_IP
 # Esperar o provisionamento terminar de verdade
 cloud-init status --wait
 
-# Conferir que nada falhou no meio
-sudo journalctl -u cloud-init --no-pager | grep -iE 'fail|error' || echo "limpo"
+# O que o runcmd (com `set -x`) realmente fez fica aqui, não no journalctl:
+sudo tail -100 /var/log/cloud-init-output.log
 ```
 
 Verificações que valem os 30 segundos:
@@ -140,9 +188,28 @@ Verificações que valem os 30 segundos:
 docker run --rm hello-world          # docker funciona sem sudo
 docker network ls | grep -E 'edge|data'
 free -h                              # deve mostrar 2 Gi de swap
-sudo ufw status
+sudo ufw status                      # 22, 80, 443/tcp, 443/udp
 sudo fail2ban-client status sshd     # jail ativo (não só o serviço)
 ssh root@SEU_IP                      # DEVE falhar — se entrar, algo deu errado
+```
+
+**Se o SSH dá timeout mas `ping` responde**, antes de culpar o servidor:
+`nc -zv github.com 22`. Redes corporativas e de convidados costumam
+bloquear saída na porta 22 para qualquer destino — o sintoma é idêntico ao
+de um firewall no servidor. Teste de outro lugar (`check-host.net`, hotspot
+do celular) antes de mexer em qualquer coisa. Aconteceu no primeiro acesso
+do `srv01` (Wi-Fi `#GSI`).
+
+**Se `cloud-init status --wait` nunca terminar ou `ssh matheus@` falhar**, a
+rota manual é o `provisionar.sh` — ele faz exatamente o que o cloud-init
+faria, mas por SSH e de forma visível. Entre como `root` pelo console VNC da
+Hetzner (Actions → Console) ou, se o sshd ainda aceitar root, por SSH:
+
+```bash
+scp scripts/provisionar.sh root@SEU_IP:~
+ssh root@SEU_IP 'bash ~/provisionar.sh'
+# NÃO feche esta sessão ainda — em outro terminal, teste antes:
+ssh matheus@SEU_IP
 ```
 
 Opcional, mas ajuda a ler log: `sudo timedatectl set-timezone America/Sao_Paulo`.
@@ -150,6 +217,11 @@ Se fizer isso, lembre que o `backup.timer` passa a rodar 03:10 no horário de
 Brasília em vez de UTC.
 
 ## 6. Subir a infraestrutura
+
+O `infra/compose.yml` já vem calibrado para 4 GB compartilhados (Postgres com
+`shared_buffers=256MB`, `effective_cache_size=1GB`, 60 conexões — de
+propósito bem abaixo da regra dos 25%, porque Caddy, Kuma e os projetos
+dividem a mesma RAM).
 
 Do seu notebook, de dentro deste repo:
 
@@ -169,7 +241,7 @@ openssl rand -base64 32     # senha do banco, cole no .env
 nano .env                   # DOMINIO, ACME_EMAIL, POSTGRES_PASSWORD
 
 docker compose up -d
-docker compose ps
+docker compose ps           # os três "healthy" em ~10 s
 ```
 
 Da próxima vez que você mexer no `compose.yml` ou no `Caddyfile`, é só rodar o
@@ -192,8 +264,9 @@ até você criar, a tela de cadastro fica aberta para quem chegar primeiro.
 
 ## 7. Backup
 
-Crie o bucket (Cloudflare R2 ou Backblaze B2, ambos com 10 GB grátis) e um
-token de leitura/escrita. No servidor:
+Crie o bucket (Cloudflare R2 ou Backblaze B2, ambos com 10 GB grátis — o R2
+exige cartão cadastrado mesmo dentro do free tier) e um token de
+leitura/escrita. No servidor:
 
 ```bash
 sudo cp ~/servidor/scripts/backup.sh ~/servidor/scripts/restore*.sh /usr/local/bin/
@@ -281,10 +354,10 @@ Pronto: `https://meu-blog.SEU_DOMINIO`.
 ## Operação
 
 ```bash
-# Ver o que está consumindo RAM — o número que mais importa aqui
+# Ver o que está consumindo RAM — o número que mais importa com 4 GB
 docker stats --no-stream
 
-# Espaço em disco (40 GB acabam mais rápido do que parece)
+# Espaço em disco (40 GB somem rápido com imagens órfãs)
 df -h /  &&  docker system df
 
 # Limpeza de imagens órfãs
@@ -298,6 +371,14 @@ ssh -L 5432:localhost:5432 matheus@SEU_IP \
     'docker compose -f /opt/stacks/_infra/compose.yml exec postgres psql -U postgres'
 ```
 
+Sinais de que os 4 GB acabaram: swap em uso constante acima de ~500 MB,
+containers mortos por OOM (`dmesg | grep -i oom`), somatório dos limites de
+memória dos projetos passando de ~2,5 GB. A saída é o **Rescale** no console
+da Hetzner (CX33: 4 vCPU/8 GB, US$ 9,99) — exige desligar o servidor por um
+minuto, e disco maior é irreversível (marque "só CPU/RAM" para poder voltar).
+Depois, dobre `shared_buffers`/`effective_cache_size` no `compose.yml` e
+rode `deploy-infra.sh`.
+
 ## Modelo: o repo é molde, o servidor é o estado
 
 Este repositório **não** é a fonte da verdade do que está rodando. Ele é o
@@ -306,7 +387,7 @@ servidor construído.
 
 | | Onde vive | Como se recupera |
 |---|---|---|
-| cloud-init, infra base, templates, scripts | este repo (git) | `git clone` + `deploy-infra.sh` |
+| cloud-init, infra base, templates, scripts | este repo (git) | `git clone` + passo 4 + `deploy-infra.sh` |
 | `/opt/stacks/<projeto>/` e os `.env` | só no servidor | `restore-stacks.sh` |
 | databases | só no Postgres | `restore.sh` |
 
@@ -340,8 +421,8 @@ Cenário: o servidor morreu, a conta foi suspensa, ou você quer migrar de
 provedor. Com os três pedaços acima, a reconstrução é mecânica:
 
 ```bash
-# 1. Servidor novo com o mesmo cloud-init (passo 4)
-# 2. Apontar o DNS para o IP novo (passo 3)
+# 1. Servidor novo (passo 4 deste runbook, do zero)
+# 2. Aponte o DNS para o IP novo (passo 3)
 
 # 3. Do notebook, no repo:
 ./scripts/deploy-infra.sh matheus@IP_NOVO
@@ -374,9 +455,13 @@ o backup inteiro vira ruído. **Guarde num gerenciador de senhas hoje.**
 
 **O Docker ignora o `ufw`.** Ele escreve regras de iptables por fora e uma
 porta publicada com `ports:` fica exposta na internet mesmo com o `ufw` negando.
-Por isso o Cloud Firewall da Hetzner — que roda fora da VM e o Docker não
+Por isso o Hetzner Cloud Firewall — que roda fora da VM e o Docker não
 alcança — é a defesa que de fato conta. Regra do setup: **só o Caddy usa
 `ports:`**. Todo o resto conversa pelas redes internas.
+
+**Porta 25 (SMTP) de saída é bloqueada em conta nova da Hetzner** (e sempre
+na Oracle). Qualquer projeto que envie e-mail deve usar API (Resend,
+Postmark, SES) em vez de SMTP direto.
 
 **Alias de rede é obrigatório em rede compartilhada.** Dois projetos com um
 serviço chamado `app` na rede `edge` colidem no DNS e o Caddy passa a rotear
@@ -387,22 +472,47 @@ para o container errado, de forma intermitente. O template já define
 repedir tudo de uma vez pode bater no rate limit do Let's Encrypt (50
 certificados por domínio registrado por semana).
 
-**Aumento de disco na Hetzner é irreversível.** Você pode subir e descer de
-plano à vontade (CAX11 ↔ CAX21) desde que não marque a opção de redimensionar
-o disco. Se marcar uma vez, não dá mais para voltar a um plano menor.
-
 **`docker compose down -v` apaga volumes.** No stack `_infra` isso significa o
 banco inteiro. Use `down` sem `-v`.
 
-## Quando subir para o CAX21
+**Rescale com disco é irreversível.** Aumentar só CPU/RAM pode voltar
+atrás; aumentar o disco, não.
 
-Vigie `docker stats` e `free -h`. Sinais de que 4 GB não bastam mais:
+---
 
-- swap em uso constante acima de ~500 MB
-- containers sendo mortos por OOM (`dmesg | grep -i oom`)
-- somatório dos limites de memória dos projetos passando de ~3 GB
+## Apêndice: Oracle Cloud Always Free (opcional)
 
-O upgrade é um reboot de dois minutos no console (Rescale), sem migração e sem
-mudar IP. CAX21 dobra tudo: 4 vCPU, 8 GB, 80 GB, por ~€10,99 ≈ R$ 73/mês.
-Ao subir, dobre também `shared_buffers` e `effective_cache_size` no
-`infra/compose.yml`.
+Entre 02 e 14/09/2026 este repo tentou subir na Oracle (`VM.Standard.A1.Flex`,
+2 OCPU/12 GB ARM, R$ 0) em `sa-saopaulo-1`. Resultado: **16 mil+ tentativas
+sem capacidade**, e o `compute-capacity-report` da própria Oracle confirmando
+pool zerado para todos os shapes free. A decisão de 13/09 foi subir a Hetzner
+e deixar o loop rodando como loteria — se um dia sair, migrar é o
+"Reconstruir do zero" acima apontado para o IP novo. O design completo da
+tentativa está em `docs/superpowers/specs/2026-09-02-migracao-oracle-a1-design.md`.
+
+O que fica no repo para isso:
+
+- `scripts/criar-instancia.sh` — loop via OCI CLI (`~/.local/share/oci-cli-venv`,
+  config em `~/.oci/`). Sonda `compute-capacity-report` antes de cada
+  launch, `--no-retry`, trava `flock` dentro do repo, detecta sucesso pelo
+  OCID (não pelo código de saída), promove o IP a reservado sozinho. Morre
+  junto com a suspensão do notebook; religar:
+  ```bash
+  setsid nohup ./scripts/criar-instancia.sh >/dev/null 2>&1 & disown
+  tail -f criar-instancia.log
+  ```
+- `scripts/oci.env` (ignorado pelo git) — os 4 OCIDs; modelo em `oci.env.example`.
+- `cloud-init.yaml` — o mesmo arquivo; o script passa via `--user-data-file`.
+  O bloco de growfs e a purga do `iptables-persistent` existem por causa da
+  imagem da Oracle e são inofensivos na Hetzner.
+
+Se sair, o que muda em relação ao runbook Hetzner: Security List do VCN faz o
+papel do Cloud Firewall (**criada antes da instância**, mesmas 4 regras);
+`compose.yml` do Postgres deve ser retunado para 12 GB (`shared_buffers=3GB`,
+`effective_cache_size=8GB`, `work_mem=16MB`, `maintenance_work_mem=512MB`,
+100 conexões) ou 6 GB (metade disso); vigiar o **idle reclaim** (7 dias com
+CPU p95 <20% E rede <20% E memória <20% — checar `MemoryUtilization` no OCI
+Monitoring, não remover o `oracle-cloud-agent`); teto de 200 GB de block
+storage; e a home region é irreversível. O console web da Oracle concatena
+em vez de substituir nos campos de cloud-init e chave SSH — por isso o
+script existe.

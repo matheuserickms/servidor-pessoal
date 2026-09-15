@@ -16,3 +16,10 @@ backup.env
 .DS_Store
 *.swp
 *~
+
+# OCIDs da tenancy (o .example é o que fica versionado)
+scripts/oci.env
+
+# Artefatos de execução do retry loop
+criar-instancia.log
+.criar-instancia.lock

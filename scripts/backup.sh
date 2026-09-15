@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
 # Backup diário: dump lógico do Postgres + configuração dos stacks, enviados
-# criptografados para um bucket fora da Hetzner.
+# criptografados para um bucket fora do provedor.
 #
 # Destino no servidor: /usr/local/bin/backup.sh   (root:root, chmod 700)
 # Disparado pelo systemd timer (ver systemd/backup.timer).
 #
-# Por que dump lógico e não snapshot da Hetzner: snapshot mora na mesma conta
+# Por que dump lógico e não snapshot do provedor: snapshot mora na mesma conta
 # que pode ser suspensa ou perdida. Backup que compartilha o ponto de falha do
 # original não é backup.
 # =============================================================================
