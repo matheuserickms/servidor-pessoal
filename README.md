@@ -266,9 +266,24 @@ até você criar, a tela de cadastro fica aberta para quem chegar primeiro.
 
 ## 7. Backup
 
-Crie o bucket (Cloudflare R2 ou Backblaze B2, ambos com 10 GB grátis — o R2
-exige cartão cadastrado mesmo dentro do free tier) e um token de
-leitura/escrita. No servidor:
+O `backup.sh` funciona nos dois estados. **Sem `/etc/backup.env`** ele roda em
+modo local: dump do Postgres + tar de `/opt/stacks` (os `.env` com as senhas
+dos databases e o `sessions/` do bot — sem o `*/src`, que é código versionado)
+em `/var/backups/postgres`, retenção de 7 dias, e avisa em toda execução que
+**não existe cópia fora do servidor**. Isso cobre erro humano e migration
+ruim; não cobre perder o servidor. É estado provisório, não destino.
+
+```bash
+sudo cp ~/servidor/scripts/backup.sh /usr/local/bin/ && sudo chmod 700 /usr/local/bin/backup.sh
+sudo cp ~/servidor/systemd/backup.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now backup.timer
+sudo /usr/local/bin/backup.sh     # primeira execução, manual
+```
+
+Para fechar o ciclo, crie o bucket (Cloudflare R2 ou Backblaze B2, ambos com
+10 GB grátis — o R2 exige cartão cadastrado mesmo dentro do free tier) e um
+token de leitura/escrita. Com `/etc/backup.env` no lugar, o **mesmo script**
+passa a enviar via restic, sem nenhuma outra mudança. No servidor:
 
 ```bash
 sudo cp ~/servidor/scripts/backup.sh ~/servidor/scripts/restore*.sh /usr/local/bin/
