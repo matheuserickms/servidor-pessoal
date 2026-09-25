@@ -25,18 +25,37 @@ RETENCAO_SEMANAL=4
 TAMANHO_MINIMO_DUMP=1024 # bytes; abaixo disso o dump é lixo
 
 # RESTIC_REPOSITORY, RESTIC_PASSWORD, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# O arquivo pode existir só para o BACKUP_PING_URL (monitor do Uptime Kuma),
+# sem bucket nenhum — foi o que aconteceu em 25/09, e o backup quebrou na
+# hora: `restic init` sem repositório aborta. Quem decide o modo é o
+# RESTIC_REPOSITORY, não a existência do arquivo.
 if [[ -f /etc/backup.env ]]; then
 	# shellcheck source=/dev/null
 	source /etc/backup.env
-	OFFSITE=1
-else
-	OFFSITE=0
 fi
+OFFSITE=0
+[[ -n "${RESTIC_REPOSITORY:-}" ]] && OFFSITE=1
 
 log() { echo "[$(date -Is)] $*"; }
 falha() {
 	log "FALHA: $*"
 	exit 1
+}
+
+# Chamado no fim dos DOIS modos (local e com restic): o monitor precisa saber
+# que o backup do dia aconteceu, mesmo enquanto não há bucket. O silêncio no
+# Kuma é o alarme.
+avisar_monitor() {
+	if [[ -z "${BACKUP_PING_URL:-}" ]]; then
+		log "AVISO: BACKUP_PING_URL não definida — nada vai te alertar se este backup parar"
+		return
+	fi
+	if curl -fsS --max-time 10 "$BACKUP_PING_URL" >/dev/null; then
+		log "monitor avisado"
+	else
+		# Não falha o backup por causa disto: o backup está feito e íntegro.
+		log "AVISO: backup ok, mas o ping para o monitor falhou"
+	fi
 }
 
 mkdir -p "$DUMP_DIR"
@@ -77,8 +96,9 @@ if [[ "$OFFSITE" -eq 0 ]]; then
 	find "$DUMP_DIR" -name 'stacks-*.tar.gz' -mtime +"$RETENCAO_DIARIA" -delete
 
 	log "ok: $(du -h "$DUMP" | cut -f1) banco + $(du -h "$STACKS_TAR" | cut -f1) stacks em $DUMP_DIR"
-	log "AVISO: SEM CÓPIA FORA DO SERVIDOR. /etc/backup.env não existe — se este"
-	log "       servidor for perdido, este backup vai junto. Ver passo 7 do README."
+	log "AVISO: SEM CÓPIA FORA DO SERVIDOR. RESTIC_REPOSITORY não definido — se"
+	log "       este servidor for perdido, este backup vai junto. Ver passo 7."
+	avisar_monitor
 	exit 0
 fi
 
@@ -136,16 +156,6 @@ find "$DUMP_DIR" -name 'pg-*.sql.gz' -mtime +2 -delete
 #    Crie um monitor do tipo "Push" no Uptime Kuma e ponha a URL dele em
 #    BACKUP_PING_URL, dentro de /etc/backup.env.
 # ---------------------------------------------------------------------------
-if [ -n "${BACKUP_PING_URL:-}" ]; then
-	if curl -fsS --max-time 10 "$BACKUP_PING_URL" >/dev/null; then
-		log "monitor avisado"
-	else
-		# Não falha o backup por causa disto: o backup está feito e íntegro.
-		# O silêncio no Kuma já sinaliza que algo precisa de atenção.
-		log "AVISO: backup ok, mas o ping para o monitor falhou"
-	fi
-else
-	log "AVISO: BACKUP_PING_URL não definida — nada vai te avisar se este backup parar"
-fi
+avisar_monitor
 
 log "concluído"
