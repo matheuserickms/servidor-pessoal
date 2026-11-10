@@ -42,6 +42,12 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./sites:/etc/caddy/sites:ro
+      # Sites estáticos: cada projeto envia o build por rsync para a sua
+      # pasta em /opt/stacks e o .caddy dele (em ./sites) serve de /srv/<nome>.
+      # Montagem nova exige `docker compose up -d caddy` (recria o container,
+      # ~5 s fora); só reload não enxerga a pasta.
+      - /opt/stacks/caosbot/painel:/srv/caos-painel:ro # caosBot/docker/caddy/caos.caddy
+      - /opt/stacks/piller/site:/srv/piller:ro # site-psicologa/deploy/caddy/piller.caddy
       - caddy_data:/data
       - caddy_config:/config
     networks:
